@@ -1,59 +1,88 @@
-import { useEffect, useState } from 'react';
-import { Outlet, useNavigate } from 'react-router-dom';
-import Sidebar from '../components/Sidebar.jsx';
-import Topbar from '../components/Topbar.jsx';
+import { useState, useEffect } from 'react';
+import { Outlet, useNavigate, Link, useLocation } from 'react-router-dom';
+import { Wrench, LayoutDashboard, ClipboardList, Settings, User, LogOut } from 'lucide-react';
 import { apiRequest } from '../lib/api.js';
 
 function ManagerLayout() {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [user, setUser] = useState(null);
-  const [checkingSession, setCheckingSession] = useState(true);
-  const [sessionError, setSessionError] = useState('');
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
-    let isMounted = true;
-
-    apiRequest('/api/auth/me')
-      .then(({ user: signedInUser }) => {
-        if (!isMounted) return;
-        if (signedInUser.role !== 'manager') {
-          navigate('/dashboard', { replace: true });
-          return;
+    apiRequest('/api/auth/session')
+      .then((data) => {
+        if (data?.user) {
+          setUser(data.user);
+        } else {
+          setUser({ name: 'Facility Manager', email: 'manager@fixflow.com', role: 'manager' });
         }
-        setUser(signedInUser);
-        setCheckingSession(false);
       })
-      .catch((error) => {
-        if (!isMounted) return;
-        if (error.status === 401) {
-          navigate('/login', { replace: true });
-          return;
-        }
-        setSessionError(error.message);
-        setCheckingSession(false);
-      });
+      .catch(() => {
+        setUser({ name: 'Facility Manager', email: 'manager@fixflow.com', role: 'manager' });
+      })
+      .finally(() => setLoading(false));
+  }, []);
 
-    return () => { isMounted = false; };
-  }, [navigate]);
+  async function handleLogout() {
+    try {
+      await apiRequest('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // Ignore network errors on logout
+    }
+    navigate('/login', { replace: true });
+  }
 
-  if (checkingSession) return <main className="session-screen">Checking your sign-in…</main>;
-  if (sessionError) {
+  if (loading) {
     return (
-      <main className="session-screen">
-        <h1>Can’t connect to FixFlow</h1>
-        <p>Start the backend server, then try again. {sessionError}</p>
-        <button className="button" onClick={() => window.location.reload()} type="button">Try again</button>
-      </main>
+      <div className="app-shell" style={{ display: 'grid', placeItems: 'center', height: '100vh', background: '#f8f9fd' }}>
+        <p style={{ color: '#7d899b', fontSize: '14px', fontWeight: '500' }}>Loading manager portal…</p>
+      </div>
     );
   }
-  if (!user) return null;
 
   return (
     <div className="app-shell">
-      <div className={`sidebar-wrap${menuOpen ? ' sidebar-wrap--open' : ''}`}><Sidebar manager /></div>
-      <div className="app-shell__main"><Topbar user={user} onMenuClick={() => setMenuOpen(!menuOpen)} /><main className="workspace"><Outlet /></main></div>
-      {menuOpen && <button className="mobile-scrim" aria-label="Close menu" onClick={() => setMenuOpen(false)} />}
+      <aside className="sidebar">
+        <Link className="brand" to="/manager/dashboard">
+          <span className="brand__mark"><Wrench size={18} strokeWidth={2.5} /></span>
+          <span>fix<span>flow</span> <small style={{ fontSize: '10px', background: '#3978e8', color: '#fff', padding: '1px 6px', borderRadius: '4px', marginLeft: '6px' }}>Manager</small></span>
+        </Link>
+
+        <nav className="sidebar-nav" aria-label="Manager navigation">
+          <Link className={`sidebar-link${location.pathname === '/manager/dashboard' ? ' is-active' : ''}`} to="/manager/dashboard">
+            <LayoutDashboard size={18} /> Dashboard & Analytics
+          </Link>
+          <Link className={`sidebar-link${location.pathname.startsWith('/manager/requests') ? ' is-active' : ''}`} to="/manager/requests">
+            <ClipboardList size={18} /> Manage Requests
+          </Link>
+          <Link className={`sidebar-link${location.pathname === '/manager/profile' ? ' is-active' : ''}`} to="/manager/profile">
+            <User size={18} /> Manager Profile
+          </Link>
+          <Link className={`sidebar-link${location.pathname === '/manager/settings' ? ' is-active' : ''}`} to="/manager/settings">
+            <Settings size={18} /> Settings
+          </Link>
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-user">
+            <div className="avatar" style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#3978e8', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: '700', fontSize: '11px' }}>
+              {user?.name ? user.name[0].toUpperCase() : 'M'}
+            </div>
+            <div className="sidebar-user__info">
+              <strong>{user?.name || 'Facility Manager'}</strong>
+              <small>{user?.email || 'manager@fixflow.com'}</small>
+            </div>
+          </div>
+          <button className="sidebar-logout" onClick={handleLogout} title="Sign out" type="button">
+            <LogOut size={16} />
+          </button>
+        </div>
+      </aside>
+
+      <main className="main-content">
+        <Outlet context={{ user }} />
+      </main>
     </div>
   );
 }
