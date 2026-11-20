@@ -1,9 +1,9 @@
-import { createServer } from 'node:http';
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import express from 'express';
 
 const scrypt = promisify(scryptCallback);
 const PORT = Number(process.env.PORT || 4000);
@@ -13,6 +13,12 @@ const SESSION_LENGTH = 7 * 24 * 60 * 60 * 1000;
 const USERS_FILE = process.env.FIXFLOW_USERS_FILE
   ? resolve(process.env.FIXFLOW_USERS_FILE)
   : join(dirname(fileURLToPath(import.meta.url)), 'data', 'users.json');
+const REQUESTS_FILE = process.env.FIXFLOW_REQUESTS_FILE
+  ? resolve(process.env.FIXFLOW_REQUESTS_FILE)
+  : join(dirname(fileURLToPath(import.meta.url)), 'data', 'requests.json');
+const DEVICES_FILE = process.env.FIXFLOW_DEVICES_FILE
+  ? resolve(process.env.FIXFLOW_DEVICES_FILE)
+  : join(dirname(fileURLToPath(import.meta.url)), 'data', 'devices.json');
 const SESSION_SECURE = process.env.NODE_ENV === 'production';
 const defaultOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
 const allowedOrigins = new Set(
@@ -23,17 +29,15 @@ const allowedOrigins = new Set(
 );
 
 const sessions = new Map();
+const app = express();
 let users = await readUsers();
+let requests = await readRequests();
+let devices = await readDevices();
 const dummyPasswordHash = await hashPassword(randomBytes(24).toString('hex'));
 await addConfiguredManager();
 
 function sendJson(response, status, data, extraHeaders = {}) {
-  response.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    ...extraHeaders,
-  });
-  response.end(JSON.stringify(data));
+  response.status(status).set({ 'Cache-Control': 'no-store', ...extraHeaders }).json(data);
 }
 
 function addCorsHeaders(request, response) {
@@ -44,39 +48,19 @@ function addCorsHeaders(request, response) {
   if (origin && (allowedOrigins.has(origin) || localDevelopmentOrigin)) {
     response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Access-Control-Allow-Credentials', 'true');
-    response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   }
 }
 
 async function readJson(request) {
-  const chunks = [];
-  let size = 0;
-
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > 16_000) {
-      const error = new Error('Request is too large.');
-      error.status = 413;
-      throw error;
-    }
-    chunks.push(chunk);
+  const body = request.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    const error = new Error('Please send a JSON object.');
+    error.status = 400;
+    throw error;
   }
-
-  try {
-    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      const error = new Error('Please send a JSON object.');
-      error.status = 400;
-      throw error;
-    }
-    return body;
-  } catch (error) {
-    if (error.status) throw error;
-    const parseError = new Error('Please send valid JSON.');
-    parseError.status = 400;
-    throw parseError;
-  }
+  return body;
 }
 
 function normalizeEmail(email) {
@@ -88,7 +72,16 @@ function validEmail(email) {
 }
 
 function publicUser(user) {
-  return { id: user.id, name: user.name, email: user.email, role: user.role };
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    phone: user.phone || '+92 300 1234567',
+    address: user.address || 'Sector F-8, Blue Area, Islamabad',
+    contactPreference: user.contactPreference || 'email',
+    createdAt: user.createdAt || '2026-01-15T10:00:00.000Z',
+  };
 }
 
 function cookieValue(request, cookieName) {
@@ -171,6 +164,46 @@ async function saveUsers() {
   await writeFile(USERS_FILE, `${JSON.stringify(users, null, 2)}\n`, 'utf8');
 }
 
+async function readRequests() {
+  try {
+    const contents = await readFile(REQUESTS_FILE, 'utf8');
+    const parsed = JSON.parse(contents);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function saveRequests() {
+  try {
+    await mkdir(dirname(REQUESTS_FILE), { recursive: true });
+    await writeFile(REQUESTS_FILE, `${JSON.stringify(requests, null, 2)}\n`, 'utf8');
+  } catch (err) {
+    console.error('Could not save requests to disk:', err.message);
+  }
+}
+
+async function readDevices() {
+  try {
+    const contents = await readFile(DEVICES_FILE, 'utf8');
+    const parsed = JSON.parse(contents);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function saveDevices() {
+  try {
+    await mkdir(dirname(DEVICES_FILE), { recursive: true });
+    await writeFile(DEVICES_FILE, `${JSON.stringify(devices, null, 2)}\n`, 'utf8');
+  } catch (err) {
+    console.error('Could not save devices to disk:', err.message);
+  }
+}
+
 async function addConfiguredManager() {
   const email = normalizeEmail(process.env.FIXFLOW_MANAGER_EMAIL);
   const password = process.env.FIXFLOW_MANAGER_PASSWORD;
@@ -186,9 +219,12 @@ async function addConfiguredManager() {
   if (existingUser && existingUser.role !== 'manager') {
     throw new Error('The configured manager email already belongs to a customer account. Choose another email.');
   }
+  if (existingUser && (await passwordMatches(password, existingUser.passwordHash))) {
+    return;
+  }
   const manager = {
     id: existingUser?.id || randomUUID(),
-    name: process.env.FIXFLOW_MANAGER_NAME?.trim() || 'FixFlow Manager',
+    name: process.env.FIXFLOW_MANAGER_NAME?.trim() || 'Facility Manager',
     email,
     passwordHash: await hashPassword(password),
     role: 'manager',
@@ -199,14 +235,7 @@ async function addConfiguredManager() {
 }
 
 async function handleRequest(request, response) {
-  addCorsHeaders(request, response);
-  if (request.method === 'OPTIONS') {
-    response.writeHead(204);
-    response.end();
-    return;
-  }
-
-  const path = new URL(request.url, `http://${request.headers.host || 'localhost'}`).pathname;
+  const path = request.path;
 
   if (request.method === 'GET' && path === '/api/health') {
     sendJson(response, 200, {
@@ -288,13 +317,270 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === 'GET' && path === '/api/auth/me') {
+  if (request.method === 'GET' && (path === '/api/auth/me' || path === '/api/auth/session')) {
     const user = sessionUser(request);
     if (!user) {
       sendJson(response, 401, { message: 'Please log in to continue.' });
       return;
     }
     sendJson(response, 200, { user: publicUser(user) });
+    return;
+  }
+
+  if (request.method === 'GET' && (path === '/api/requests' || path === '/api/repairs')) {
+    const urlObj = new URL(request.originalUrl, `http://${request.headers.host || 'localhost'}`);
+    const customerId = urlObj.searchParams.get('customerId') || urlObj.searchParams.get('userId');
+    const deviceId = urlObj.searchParams.get('deviceId');
+    const status = urlObj.searchParams.get('status');
+    const search = urlObj.searchParams.get('search');
+
+    let filtered = [...requests];
+    if (customerId) {
+      filtered = filtered.filter((r) => r.userId === customerId || r.customerId === customerId);
+    }
+    if (deviceId) {
+      filtered = filtered.filter((r) => r.deviceId === deviceId);
+    }
+    if (status && status !== 'All' && status !== 'All statuses') {
+      filtered = filtered.filter((r) => r.status?.toLowerCase() === status.toLowerCase());
+    }
+    if (search) {
+      const q = search.trim().toLowerCase();
+      filtered = filtered.filter((r) =>
+        r.id?.toLowerCase().includes(q) ||
+        r.deviceModel?.toLowerCase().includes(q) ||
+        r.brand?.toLowerCase().includes(q) ||
+        r.model?.toLowerCase().includes(q) ||
+        r.customerName?.toLowerCase().includes(q) ||
+        r.issueDescription?.toLowerCase().includes(q)
+      );
+    }
+    sendJson(response, 200, { requests: filtered, repairs: filtered, data: filtered });
+    return;
+  }
+
+  if (request.method === 'POST' && path === '/api/requests') {
+    const body = await readJson(request);
+    const user = sessionUser(request);
+    const deviceType = body.deviceType || body.type;
+    const brand = body.brand;
+    const model = body.model || body.deviceModel;
+    const problemCategory = body.problemCategory || body.category || body.issueCategory;
+    const problemDescription = body.problemDescription || body.description || body.issueDescription;
+
+    if (!deviceType || (!model && !brand) || !problemDescription) {
+      sendJson(response, 400, { message: 'Missing required repair fields. Device type, model/brand, and description are required.' });
+      return;
+    }
+
+    const nextNum = 1000 + requests.length + 1;
+    const newId = `REQ-${nextNum}`;
+    const newReq = {
+      id: newId,
+      userId: user?.id || body.customerId || body.userId || '37ee5d30-4b85-4859-9794-f42f3f76722a',
+      customerId: user?.id || body.customerId || 'C-101',
+      customerName: user?.name || body.customerName || body.contact || 'Valued Customer',
+      customerEmail: user?.email || body.customerEmail || '',
+      customerPhone: user?.phone || body.customerPhone || body.contact || '',
+      deviceId: body.deviceId || null,
+      deviceType: deviceType.trim(),
+      deviceModel: model ? (brand ? `${brand.trim()} ${model.trim()}` : model.trim()) : brand.trim(),
+      brand: brand?.trim() || '',
+      model: model?.trim() || '',
+      deviceSerial: (body.deviceSerial || body.serial || '').trim(),
+      issueCategory: (problemCategory || 'General Issue').trim(),
+      issueDescription: problemDescription.trim(),
+      contact: (body.contact || user?.phone || user?.email || '').trim(),
+      status: 'Submitted',
+      priority: body.priority || 'normal',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      notes: [
+        {
+          id: `N-${Date.now()}`,
+          author: 'FixFlow Intake',
+          role: 'System',
+          date: new Date().toISOString(),
+          text: 'Repair request created and submitted successfully.'
+        }
+      ]
+    };
+
+    requests.unshift(newReq);
+    await saveRequests();
+    sendJson(response, 201, { request: newReq, data: newReq, id: newReq.id });
+    return;
+  }
+
+  if (request.method === 'GET' && path.startsWith('/api/requests/')) {
+    let id = path.slice('/api/requests/'.length).trim();
+    if (id.endsWith('/status')) {
+      id = id.slice(0, -'/status'.length).trim();
+    }
+    const reqItem = requests.find((r) => r.id.toLowerCase() === id.toLowerCase());
+    if (!reqItem) {
+      sendJson(response, 404, { message: 'Service ticket not found.' });
+      return;
+    }
+    sendJson(response, 200, { request: reqItem, data: reqItem });
+    return;
+  }
+
+  if (request.method === 'PATCH' && path.startsWith('/api/requests/')) {
+    let id = path.slice('/api/requests/'.length).trim();
+    if (id.endsWith('/status')) {
+      id = id.slice(0, -'/status'.length).trim();
+    }
+    const reqIndex = requests.findIndex((r) => r.id.toLowerCase() === id.toLowerCase());
+    if (reqIndex === -1) {
+      sendJson(response, 404, { message: 'Service ticket not found.' });
+      return;
+    }
+    const body = await readJson(request);
+    const existing = requests[reqIndex];
+    if (body.status) existing.status = body.status;
+    if (body.priority) existing.priority = body.priority;
+    if (body.assignedTechnician) existing.assignedTechnician = body.assignedTechnician;
+    if (body.estimatedCompletion) existing.estimatedCompletion = body.estimatedCompletion;
+    if (body.newNote && typeof body.newNote.text === 'string' && body.newNote.text.trim()) {
+      if (!Array.isArray(existing.notes)) existing.notes = [];
+      existing.notes.push({
+        id: `N-${Date.now()}`,
+        author: body.newNote.author || 'Facility Manager',
+        role: body.newNote.role || 'Management Staff',
+        date: new Date().toISOString(),
+        text: body.newNote.text.trim(),
+      });
+    }
+    existing.updatedAt = new Date().toISOString();
+    requests[reqIndex] = existing;
+    await saveRequests();
+    sendJson(response, 200, { request: existing, data: existing, message: 'Ticket updated successfully.' });
+    return;
+  }
+
+  if (request.method === 'GET' && path === '/api/devices') {
+    const urlObj = new URL(request.originalUrl, `http://${request.headers.host || 'localhost'}`);
+    const user = sessionUser(request);
+    const userId = urlObj.searchParams.get('userId');
+
+    let userDevices = [...devices];
+    if (userId) {
+      userDevices = userDevices.filter((d) => d.userId === userId);
+    } else if (user && user.role === 'customer') {
+      const owned = userDevices.filter((d) => d.userId === user.id);
+      // If customer has devices, return theirs; if not yet seeded for this new user, show empty or all
+      userDevices = owned;
+    }
+    sendJson(response, 200, { devices: userDevices, data: userDevices });
+    return;
+  }
+
+  if (request.method === 'GET' && path.startsWith('/api/devices/')) {
+    const id = path.slice('/api/devices/'.length).trim();
+    const found = devices.find((d) => d.id.toLowerCase() === id.toLowerCase());
+    if (!found) {
+      sendJson(response, 404, { message: 'Device not found.' });
+      return;
+    }
+    sendJson(response, 200, { device: found, data: found });
+    return;
+  }
+
+  if (request.method === 'POST' && path === '/api/devices') {
+    const body = await readJson(request);
+    const user = sessionUser(request);
+    if (!body.type?.trim() || !body.brand?.trim() || !body.model?.trim()) {
+      sendJson(response, 400, { message: 'Device type, brand and model are required.' });
+      return;
+    }
+    const newDevice = {
+      id: `DEV-${Math.floor(2000 + devices.length + 1)}`,
+      userId: user?.id || body.userId || '37ee5d30-4b85-4859-9794-f42f3f76722a',
+      type: body.type.trim(),
+      brand: body.brand.trim(),
+      model: body.model.trim(),
+      serial: (body.serial || '').trim(),
+      nickname: (body.nickname || '').trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    devices.unshift(newDevice);
+    await saveDevices();
+    sendJson(response, 201, { device: newDevice, data: newDevice, id: newDevice.id });
+    return;
+  }
+
+  if (request.method === 'PUT' && path.startsWith('/api/devices/')) {
+    const id = path.slice('/api/devices/'.length).trim();
+    const devIndex = devices.findIndex((d) => d.id.toLowerCase() === id.toLowerCase());
+    if (devIndex === -1) {
+      sendJson(response, 404, { message: 'Device not found.' });
+      return;
+    }
+    const body = await readJson(request);
+    if (!body.brand?.trim() || !body.model?.trim()) {
+      sendJson(response, 400, { message: 'Brand and model are required.' });
+      return;
+    }
+    const existing = devices[devIndex];
+    if (body.type) existing.type = body.type.trim();
+    if (body.brand) existing.brand = body.brand.trim();
+    if (body.model) existing.model = body.model.trim();
+    if (body.serial !== undefined) existing.serial = body.serial.trim();
+    if (body.nickname !== undefined) existing.nickname = body.nickname.trim();
+    existing.updatedAt = new Date().toISOString();
+    devices[devIndex] = existing;
+    await saveDevices();
+    sendJson(response, 200, { device: existing, data: existing, message: 'Device updated successfully.' });
+    return;
+  }
+
+  if (request.method === 'PATCH' && (path === '/api/auth/profile' || path === '/api/auth/me')) {
+    const user = sessionUser(request);
+    if (!user) {
+      sendJson(response, 401, { message: 'Please log in to continue.' });
+      return;
+    }
+    const body = await readJson(request);
+    if (typeof body.name === 'string' && body.name.trim()) user.name = body.name.trim();
+    if (typeof body.phone === 'string') user.phone = body.phone.trim();
+    if (typeof body.address === 'string') user.address = body.address.trim();
+    if (typeof body.contactPreference === 'string') user.contactPreference = body.contactPreference;
+    if (typeof body.email === 'string' && validEmail(normalizeEmail(body.email))) {
+      const nextEmail = normalizeEmail(body.email);
+      const isTaken = users.some((u) => u.email === nextEmail && u.id !== user.id);
+      if (!isTaken) user.email = nextEmail;
+    }
+    await saveUsers();
+    sendJson(response, 200, { user: publicUser(user), message: 'Profile updated successfully.' });
+    return;
+  }
+
+  if (request.method === 'POST' && path === '/api/auth/change-password') {
+    const user = sessionUser(request);
+    if (!user) {
+      sendJson(response, 401, { message: 'Please log in to continue.' });
+      return;
+    }
+    const body = await readJson(request);
+    const { currentPassword, newPassword } = body;
+    if (!currentPassword || !newPassword) {
+      sendJson(response, 400, { message: 'Both current password and new password are required.' });
+      return;
+    }
+    if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128) {
+      sendJson(response, 400, { message: 'New password must be between 8 and 128 characters.' });
+      return;
+    }
+    const matches = await passwordMatches(currentPassword, user.passwordHash);
+    if (!matches) {
+      sendJson(response, 400, { message: 'Current password does not match.' });
+      return;
+    }
+    user.passwordHash = await hashPassword(newPassword);
+    await saveUsers();
+    sendJson(response, 200, { message: 'Password changed successfully.' });
     return;
   }
 
@@ -310,19 +596,57 @@ async function handleRequest(request, response) {
   sendJson(response, 404, { message: 'This API route does not exist.' });
 }
 
-const server = createServer((request, response) => {
-  handleRequest(request, response).catch((error) => {
-    const status = error.status || 500;
-    const message = status === 500 ? 'The server could not complete this request.' : error.message;
-    sendJson(response, status, { message });
-    if (status === 500) console.error(error);
-  });
+app.use((request, response, next) => {
+  addCorsHeaders(request, response);
+  if (request.method === 'OPTIONS') return response.status(204).end();
+  next();
+});
+app.use(express.json({ limit: 16_000, strict: true }));
+
+const apiRoutes = {
+  get: [
+    '/api/health', '/api/auth/me', '/api/auth/session',
+    '/api/requests', '/api/requests/:id', '/api/requests/:id/status',
+    '/api/repairs', '/api/devices', '/api/devices/:id',
+  ],
+  post: [
+    '/api/auth/register', '/api/auth/password-reset', '/api/auth/login',
+    '/api/requests', '/api/devices', '/api/auth/change-password', '/api/auth/logout',
+  ],
+  put: ['/api/devices/:id'],
+  patch: [
+    '/api/requests/:id', '/api/requests/:id/status',
+    '/api/auth/profile', '/api/auth/me',
+  ],
+};
+
+for (const [method, paths] of Object.entries(apiRoutes)) {
+  for (const path of paths) app[method](path, handleRequest);
+}
+
+app.use((request, response) => {
+  sendJson(response, 404, { message: 'This API route does not exist.' });
 });
 
-server.listen(PORT, HOST, () => {
+app.use((error, request, response, next) => {
+  if (response.headersSent) return next(error);
+  const status = error.status || error.statusCode || 500;
+  const message = status === 500
+    ? 'The server could not complete this request.'
+    : error.type === 'entity.too.large'
+      ? 'Request is too large.'
+      : error instanceof SyntaxError
+        ? 'Please send valid JSON.'
+        : error.message;
+  sendJson(response, status, { message });
+  if (status === 500) console.error(error);
+});
+
+app.listen(PORT, HOST, () => {
+  const activeManagerEmail = normalizeEmail(process.env.FIXFLOW_MANAGER_EMAIL);
   console.log(`FixFlow API is running at http://${HOST}:${PORT}`);
   console.log(`Health check: http://${HOST}:${PORT}/api/health`);
   console.log(process.env.FIXFLOW_MANAGER_EMAIL
-    ? `Manager account enabled for ${normalizeEmail(process.env.FIXFLOW_MANAGER_EMAIL)}`
+    ? `Manager account enabled for ${activeManagerEmail}`
     : 'No manager account configured. Set FIXFLOW_MANAGER_EMAIL and FIXFLOW_MANAGER_PASSWORD to add one.');
 });

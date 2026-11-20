@@ -1,6 +1,6 @@
 # FixFlow API
 
-The local API handles customer registration, sign-in, sign-out, and session checks. It uses Node.js built-in modules and does not need extra packages.
+The local API is built with Express.js. Express routes handle authentication, repair requests, devices, and profile updates; Node.js built-in modules handle password hashing and local JSON storage.
 
 ## Start FixFlow
 
@@ -10,7 +10,7 @@ From the project root, run:
 npm run dev
 ```
 
-This starts the API and React app together. Open the local URL printed in the terminal. If port 5173 is busy, Vite automatically uses the next available port. The API health check is at `http://127.0.0.1:4000/api/health`. Press Ctrl+C to stop the app.
+This starts the API and React app together. On a fresh clone, run `npm install` once before `npm run dev`. Open the local URL printed in the terminal. If port 5173 is busy, Vite uses the next available port. The API health check is at `http://127.0.0.1:4000/api/health`. Press Ctrl+C to stop the app.
 
 ## Configure the manager account
 
@@ -23,7 +23,7 @@ $env:FIXFLOW_MANAGER_NAME = "FixFlow Manager"
 npm run dev
 ```
 
-Customer sign-up always creates a customer account. Manager credentials are only created when both email and password are configured.
+Customer sign-up always creates a customer account. A manager account is created only when both manager email and password are configured; there are no built-in sample credentials.
 
 ## Reset a password during development
 

@@ -10,19 +10,26 @@ function ManagerLayout() {
   const location = useLocation();
 
   useEffect(() => {
-    apiRequest('/api/auth/session')
+    let isMounted = true;
+
+    apiRequest('/api/auth/me')
       .then((data) => {
-        if (data?.user) {
-          setUser(data.user);
-        } else {
-          setUser({ name: 'Facility Manager', email: 'manager@fixflow.com', role: 'manager' });
+        if (!isMounted) return;
+        if (!data?.user || data.user.role !== 'manager') {
+          // If not authenticated as manager, take directly to the manager sign in portal
+          navigate('/manager/login', { replace: true });
+          return;
         }
+        setUser(data.user);
+        setLoading(false);
       })
       .catch(() => {
-        setUser({ name: 'Facility Manager', email: 'manager@fixflow.com', role: 'manager' });
-      })
-      .finally(() => setLoading(false));
-  }, []);
+        if (!isMounted) return;
+        navigate('/manager/login', { replace: true });
+      });
+
+    return () => { isMounted = false; };
+  }, [navigate]);
 
   async function handleLogout() {
     try {
@@ -30,7 +37,7 @@ function ManagerLayout() {
     } catch {
       // Ignore network errors on logout
     }
-    navigate('/login', { replace: true });
+    navigate('/manager/login', { replace: true });
   }
 
   if (loading) {

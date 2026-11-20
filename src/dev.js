@@ -61,6 +61,10 @@ process.once('SIGINT', () => void stop(0));
 process.once('SIGTERM', () => void stop(0));
 
 try {
+  const managerEmail = process.env.FIXFLOW_MANAGER_EMAIL || 'manager@fixflow.com';
+  const managerPassword = process.env.FIXFLOW_MANAGER_PASSWORD || 'Manager123!';
+  const managerName = process.env.FIXFLOW_MANAGER_NAME || 'Facility Manager';
+
   if (!(await apiSupportsPasswordReset())) {
     const requestedPort = apiPort;
     apiPort = await findAvailablePort(requestedPort);
@@ -70,7 +74,13 @@ try {
     }
     apiProcess = spawn(process.execPath, ['src/backend/server.js'], {
       cwd: projectRoot,
-      env: { ...process.env, PORT: String(apiPort) },
+      env: {
+        ...process.env,
+        PORT: String(apiPort),
+        FIXFLOW_MANAGER_EMAIL: managerEmail,
+        FIXFLOW_MANAGER_PASSWORD: managerPassword,
+        FIXFLOW_MANAGER_NAME: managerName,
+      },
       stdio: 'inherit',
     });
     apiProcess.once('exit', (code) => {
@@ -92,8 +102,10 @@ try {
   });
   await viteServer.listen();
   const address = viteServer.httpServer.address();
-  console.log(`FixFlow web app is ready at http://127.0.0.1:${address.port}`);
-  console.log(`FixFlow API is ready at ${apiUrl}/api/health`);
+  console.log(`\n  ➜  Customer Side:      http://127.0.0.1:${address.port}`);
+  console.log(`  ➜  Manager Dashboard:   http://127.0.0.1:${address.port}/manager/dashboard`);
+  console.log(`  ➜  FixFlow API:         ${apiUrl}/api/health`);
+  console.log(`  ➜  Manager Login:       ${managerEmail} / ${managerPassword}\n`);
 } catch (error) {
   console.error(error.message);
   await stop(1);

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import PageHeader from '../components/PageHeader.jsx';
 import { apiRequest } from '../lib/api.js';
 import { Wrench, Clock, CheckCircle2, ArrowRight, Activity, TrendingUp, Users, ShieldAlert } from 'lucide-react';
@@ -7,6 +7,7 @@ import { Wrench, Clock, CheckCircle2, ArrowRight, Activity, TrendingUp, Users, S
 function ManagerDashboard() {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   useEffect(() => {
     apiRequest('/api/requests')
@@ -91,7 +92,12 @@ function ManagerDashboard() {
           ) : (
             <div className="request-list">
               {requests.slice(0, 5).map((req) => (
-                <div key={req.id} className="request-row">
+                <div
+                  key={req.id}
+                  className="request-row"
+                  onClick={() => navigate(`/manager/requests/${req.id}`)}
+                  style={{ cursor: 'pointer' }}
+                >
                   <div className="device-avatar device-avatar--blue"><Wrench size={16} /></div>
                   <div className="request-row__main">
                     <strong>{req.deviceModel || 'Unnamed Device'}</strong>
@@ -105,7 +111,12 @@ function ManagerDashboard() {
                   <span className={`status-badge status-badge--${req.status || 'in-repair'}`}>
                     {req.status ? req.status.replace(/-/g, ' ') : 'In Progress'}
                   </span>
-                  <Link to={`/manager/requests/${req.id}`} className="request-row__arrow" aria-label="View request details">
+                  <Link
+                    to={`/manager/requests/${req.id}`}
+                    className="request-row__arrow"
+                    aria-label="View request details"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <ArrowRight size={16} />
                   </Link>
                 </div>
